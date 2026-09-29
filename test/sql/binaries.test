@@ -1,0 +1,168 @@
+# name: test/sql/binaries.test
+# description: all table functions against test/fixtures (run scripts/fixtures.sh first)
+# group: [binaries]
+
+statement error
+SELECT * FROM binary_info('test/fixtures/elf-base');
+----
+Catalog Error: Table Function with name binary_info does not exist!
+
+require binaries
+
+# ---- binary_info: formats, fat Mach-O split per arch, non-binaries skipped by globs ----
+
+query TTTTTIT
+SELECT regexp_replace(path, '.*[/\\]', ''), arch, format, kind, endian, bits, soname
+FROM binary_info('test/fixtures/*') ORDER BY 1, 2;
+----
+elf-base	x86_64	elf	executable	little	64	NULL
+elf-base-aarch64	aarch64	elf	executable	little	64	NULL
+elf-base.o	x86_64	elf	relocatable	little	64	NULL
+elf-comdat.o	x86_64	elf	relocatable	little	64	NULL
+fat-macho	aarch64	macho	executable	little	64	NULL
+fat-macho	x86_64	macho	executable	little	64	NULL
+macho-base-aarch64	aarch64	macho	executable	little	64	NULL
+macho-base-x86_64	x86_64	macho	executable	little	64	NULL
+macho-libexports.dylib	aarch64	macho	dynamic	little	64	libexports.dylib
+pe-export.dll	x86_64	pe	dynamic	little	64	NULL
+pe-import.exe	x86_64	pe	executable	little	64	NULL
+
+query TT
+SELECT interpreter, build_id FROM binary_info('test/fixtures/elf-base');
+----
+/lib64/ld-linux-x86-64.so.2	d446a061bb9ac27ab43b11718fdedf5b7f3af6f4
+
+query T
+SELECT interpreter FROM binary_info('test/fixtures/macho-base-aarch64');
+----
+/usr/lib/dyld
+
+# ---- binary_libraries: ldd without resolution ----
+
+query TTTT
+SELECT regexp_replace(path, '.*[/\\]', ''), arch, library, kind
+FROM binary_libraries('test/fixtures/*') ORDER BY 1, 2, 3;
+----
+elf-base	x86_64	libc.so.6	needed
+elf-base-aarch64	aarch64	libc.so.6	needed
+fat-macho	aarch64	/usr/lib/libSystem.B.dylib	load
+fat-macho	x86_64	/usr/lib/libSystem.B.dylib	load
+macho-base-aarch64	aarch64	/usr/lib/libSystem.B.dylib	load
+macho-base-x86_64	x86_64	/usr/lib/libSystem.B.dylib	load
+macho-libexports.dylib	aarch64	/usr/lib/libSystem.B.dylib	load
+pe-import.exe	x86_64	delay.dll	delay
+pe-import.exe	x86_64	export.dll	import
+
+# ---- binary_imports: ELF versions, PE ordinals ----
+
+query TTTT
+SELECT library, name, version, weak FROM binary_imports('test/fixtures/elf-base') ORDER BY name;
+----
+NULL	_ITM_deregisterTMCloneTable	NULL	true
+NULL	_ITM_registerTMCloneTable	NULL	true
+libc.so.6	__cxa_finalize	GLIBC_2.2.5	true
+NULL	__gmon_start__	NULL	true
+libc.so.6	__libc_start_main	GLIBC_2.2.5	false
+libc.so.6	printf	GLIBC_2.2.5	false
+
+query TT
+SELECT library, name FROM binary_imports('test/fixtures/pe-import.exe') ORDER BY library, name;
+----
+delay.dll	delayed
+export.dll	#2
+export.dll	exported_named
+
+# ---- binary_symbols: demangling, symtab vs dynsym ----
+
+query TTT
+SELECT name, demangled, kind FROM binary_symbols('test/fixtures/elf-comdat.o') WHERE demangled IS NOT NULL ORDER BY name;
+----
+_Z4bar1v	bar1()	text
+_Z4bar2v	bar2()	text
+_Z4foo1i	foo1(int)	text
+_Z4foo2i	foo2(int)	text
+
+query TTT
+SELECT source, section, defined FROM binary_symbols('test/fixtures/elf-base') WHERE name = 'main';
+----
+symtab	.text	true
+
+query I
+SELECT count(*) > 0 FROM binary_symbols('test/fixtures/elf-base') WHERE source = 'dynsym' AND name = 'printf' AND NOT defined;
+----
+true
+
+# ---- binary_sections / binary_segments ----
+
+query TTT
+SELECT name, segment, kind FROM binary_sections('test/fixtures/macho-base-aarch64') WHERE name IN ('__text', '__cstring') ORDER BY name;
+----
+__cstring	__TEXT	readonlystring
+__text	__TEXT	text
+
+query TTTT
+SELECT arch, r, w, x FROM binary_segments('test/fixtures/fat-macho') WHERE name = '__TEXT' ORDER BY arch;
+----
+aarch64	true	false	true
+x86_64	true	false	true
+
+# ---- binary_strings ----
+
+query I
+SELECT count(*) FROM binary_strings('test/fixtures/elf-base') WHERE string = 'Hello, world';
+----
+1
+
+query I
+SELECT min(length(string)) >= 12 FROM binary_strings('test/fixtures/elf-base', min_length := 12);
+----
+true
+
+# ---- projection: no columns, one column, leading columns only ----
+
+query I
+SELECT count(*) FROM binary_symbols('test/fixtures/*');
+----
+<REGEX>:[1-9][0-9]*
+
+query I
+SELECT count(DISTINCT path) FROM binary_info('test/fixtures/*');
+----
+10
+
+# ---- errors ----
+
+statement error
+SELECT * FROM binary_info('test/fixtures/readme.txt');
+----
+not an ELF, Mach-O or PE file
+
+statement error
+SELECT * FROM binary_info('test/fixtures/does-not-exist');
+----
+No such file or directory
+
+statement error
+SELECT * FROM binary_strings('test/fixtures/elf-base', min_length := 0);
+----
+min_length must be at least 1
+
+query I
+SELECT count(*) FROM binary_info('test/fixtures/no-match-*');
+----
+0
+
+# ---- binary_describe: every function, parameter and column is documented ----
+
+query III
+SELECT count(DISTINCT function), count(*) FILTER (kind = 'column'), count(*) FILTER (description IS NULL OR description = '')
+FROM binary_describe();
+----
+8	70	0
+
+# ---- {a,b} alternatives in globs ----
+
+query I
+SELECT count(DISTINCT path) FROM binary_info('test/fixtures/{elf,macho}-base*');
+----
+5

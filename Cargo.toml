@@ -1,0 +1,22 @@
+[package]
+name = "binaries"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+strip = true
+
+[dependencies]
+duckdb = { version = "~1.10505.0", features = ["loadable-extension"] }
+duckdb-tables = { git = "https://github.com/ryaart/duckdb-tables", branch = "main" }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
+memmap2 = "0.9"
+glob = "0.3"
+rustc-demangle = "0.1"
+cpp_demangle = "0.5"
